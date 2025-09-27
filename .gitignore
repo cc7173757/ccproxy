@@ -1,0 +1,10 @@
+# Nix
+/result
+
+# Rust
+/target/
+
+# App
+.env
+.env.*
+/data/

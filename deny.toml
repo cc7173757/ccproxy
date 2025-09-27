@@ -1,0 +1,17 @@
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+]
+
+exceptions = [
+    { name = "unicode-ident", allow = ["Unicode-DFS-2016"] }
+]
+
+[licenses.private]
+ignore = true
+
+[sources]
+allow-git = [
+    "https://github.com/chungchan-dev/rust-raknet.git"
+]

@@ -1,0 +1,31 @@
+{
+  "cSpell.words": [
+    "appender",
+    "cachix",
+    "ccproxy",
+    "clippy",
+    "convco",
+    "dotenv",
+    "dotenvy",
+    "gametype",
+    "hostip",
+    "hostport",
+    "ipetkov",
+    "maxplayers",
+    "MCEE",
+    "MCPE",
+    "nixos",
+    "nixpkgs",
+    "nlewo",
+    "numplayers",
+    "oxalica",
+    "pkgs",
+    "raknet",
+    "repr",
+    "rustsec",
+    "serde",
+    "skopeo",
+    "splitnum",
+    "thiserror"
+  ]
+}

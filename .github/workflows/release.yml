@@ -1,0 +1,192 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@v18
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Check commits
+        run: nix shell nixpkgs#convco -c convco check
+
+      - name: Get next version
+        id: version
+        run: echo "tag=$(nix shell nixpkgs#git-cliff -c git-cliff --bumped-version)" >> $GITHUB_OUTPUT
+
+      - name: Generate changelog
+        run: nix shell nixpkgs#git-cliff -c git-cliff -v -r ./ -t ${{ steps.version.outputs.tag }} > RELEASE_NOTES.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: RELEASE_NOTES.md
+
+  commit_version_bump:
+    needs: [prepare]
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    outputs:
+      sha: ${{ steps.get_sha.outputs.sha }}
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ref: ${{ github.ref_name }}
+
+      - uses: cachix/install-nix-action@v18
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Update version
+        run: |
+          TAG=${{ needs.prepare.outputs.tag }}
+          VERSION=${TAG#v}
+          nix shell nixpkgs#cargo-edit -c cargo set-version $VERSION
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+
+      - name: Commit and push
+        run: |
+          mv RELEASE_NOTES.md CHANGELOG.md
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "chore(release): ${{ needs.prepare.outputs.tag }}"
+          git push
+
+      - name: Get commit SHA
+        id: get_sha
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+  build:
+    needs: [prepare, commit_version_bump]
+
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: ccproxy-x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: ccproxy-x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: ccproxy-x86_64-pc-windows-msvc.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ref: ${{ needs.commit_version_bump.outputs.sha }}
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary
+        shell: bash
+        run: |
+          BINARY_NAME="ccproxy"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            BINARY_NAME="ccproxy.exe"
+          fi
+          mv target/${{ matrix.target }}/release/${BINARY_NAME} ./${{ matrix.name }}
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            7z a ${{ matrix.name }}.zip ${{ matrix.name }}
+          else
+            tar -czvf ${{ matrix.name }}.tar.gz ${{ matrix.name }}
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: "${{ matrix.name }}.*"
+          if-no-files-found: error
+
+  publish_release:
+    needs: [prepare, build, commit_version_bump]
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: binaries
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          files: binaries/*/*
+          target_commitish: ${{ needs.commit_version_bump.outputs.sha }}
+
+  publish_container:
+    needs: [prepare, publish_release]
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: cachix/install-nix-action@v18
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push container image
+        run: |
+          nix run .#container.copyToDockerDaemon
+          docker tag ccproxy:latest ghcr.io/${{ github.repository }}:${{ needs.prepare.outputs.tag }}
+          docker tag ccproxy:latest ghcr.io/${{ github.repository }}:latest
+          docker push ghcr.io/${{ github.repository }} --all-tags
